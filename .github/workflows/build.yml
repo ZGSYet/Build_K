@@ -10,7 +10,7 @@ on:
       kernel_branch:
         description: 'Kernel branch'
         required: true
-        default: 'A15-KSU'
+        default: 'stagging'
       recurse_submodule:
         description: 'Clone submodules (true/false)'
         required: true
