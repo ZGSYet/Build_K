@@ -1,154 +1,110 @@
-name: Build Kernel
+name: Kernel Builder
 
 on:
   workflow_dispatch:
     inputs:
       kernel_url:
-        description: 'Kernel GitHub URL'
+        description: Kernel GitHub URL
         required: true
-        default: 'https://github.com/Blacksmithyogi/kernel_xiaomi_courbet.git'
+        default: https://github.com/Kenshin1444/NekoPoi-Kranul-B.git
+
       kernel_branch:
-        description: 'Kernel branch'
+        description: Kernel branch
         required: true
-        default: 'stagging'
-      recurse_submodule:
-        description: 'Clone submodules (true/false)'
-        required: true
-        default: 'false'
-      is_release:
-        description: 'Create GitHub release (true/false)'
-        required: true
-        default: 'false'
+        default: main
 
 jobs:
   Build-Kernel:
-    strategy:
-      fail-fast: false
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+
     env:
-      KERNEL_NAME: "courbet"
-      KERNEL_DIR: "courbet-kernel"
-      ARCH: "arm64"
-      SUBARCH: "arm64"
-      KBUILD_BUILD_USER: "Giyokun07"
-      KBUILD_BUILD_HOST: "github"
-      KERNEL_URL: ${{ github.event.inputs.kernel_url }}
-      KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch }}
-      IS_RELEASE: ${{ github.event.inputs.is_release }}
-      RECURSE_SUBMODULE: ${{ github.event.inputs.recurse_submodule }}
-      KERNEL_VERSION: 'v0000'
+      KERNEL_NAME: courbet
+      KERNEL_DIR: kernel
+      ARCH: arm64
+      SUBARCH: arm64
+      ANYKERNEL_DIR: AnyKernel3
+
+      KBUILD_BUILD_USER: Giyokun07
+      KBUILD_BUILD_HOST: github
+
+      TG_TOKEN: 8647652050:AAG0ZKtMuE4NhlOKx8EHz4VHfgPLlguMTqw
+      TG_CHAT_ID: 7540957411
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt update && sudo apt install -y \
-            git bc bison flex libssl-dev make automake build-essential \
-            curl zip clang lld gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+        bc bison build-essential curl flex git \
+        libssl-dev libncurses-dev lzop \
+        python3 unzip wget xz-utils zip
 
-      - name: Clone kernel source
-        run: |
-          if [ "${{ env.RECURSE_SUBMODULE }}" = "true" ]; then
-            git clone --recurse-submodules ${{ env.KERNEL_URL }} -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_DIR }}
-          else
-            git clone ${{ env.KERNEL_URL }} -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_DIR }}
-          fi
+    - name: Clone Kernel
+      run: |
+        git clone --depth=1 \
+        ${{ github.event.inputs.kernel_url }} \
+        -b ${{ github.event.inputs.kernel_branch }} \
+        $KERNEL_DIR
 
-      - name: Setup KernelSU Next
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next-susfs
-          # Fix for missing symlink
-          mkdir -p drivers
-          ln -sf ../../KernelSU/kernel drivers/kernelsu
+    - name: Clone Clang
+      run: |
+        git clone https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r547379.git \
+        --depth=1 -b 15.0 clang
 
-      - name: Clean build directory
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-          make O=out clean
-          make O=out mrproper
+    - name: Download Eva GCC
+      run: |
+        mkdir gcc
+        cd gcc
 
-      - name: build kernel from source
-        run: |
-          cd ${GITHUB_WORKSPACE}/${KERNEL_DIR}
-          export ARCH=${ARCH}
-          make O=out ${KERNEL_NAME}_defconfig
-          make -j$(nproc --all) \
-          O=out EXTRAVERSION="" CC=clang \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CONFIG_NO_ERROR_ON_MISMATCH=y
-  
-          BUILD_TIME=$(date '+%Y%m%d-%H%M%S')
-          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
-  
-          KERNEL_VERSION=$(make kernelversion)
-          echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
-  
-          mkdir ${GITHUB_WORKSPACE}/output
-          cp out/arch/arm64/boot/Image.gz ${GITHUB_WORKSPACE}/output/
-          cp out/arch/arm64/boot/dtb.img ${GITHUB_WORKSPACE}/output/
-          cp out/arch/arm64/boot/dtbo.img ${GITHUB_WORKSPACE}/output/
-          cd ${GITHUB_WORKSPACE}
+        ASSET_URLS=$(curl -s https://api.github.com/repos/mvaisakh/gcc-build/releases/latest \
+        | grep browser_download_url | cut -d '"' -f 4 | grep ".xz")
 
-      - name: Create AnyKernel3 zip
-        run: |
-          if ! git clone --depth=1 https://github.com/Blacksmithyogi/AnyKernel3 -b Smirnoff; then
-            echo "::error::Failed to clone AnyKernel3 repository"
-            exit 1
-          fi
+        for url in $ASSET_URLS; do
+          wget -q $url
+        done
 
-          echo "Contents of output directory:"
-          ls -la ${GITHUB_WORKSPACE}/output/
+        for file in *.xz; do
+          tar -xf $file
+        done
 
-          if [ ! -f ${GITHUB_WORKSPACE}/output/Image.gz ]; then
-            echo "::error::Image.gz not found in output directory"
-            exit 1
-          fi
+        echo "GCC64_DIR=$(pwd)/$(ls | grep aarch64 | head -n1)" >> $GITHUB_ENV
+        echo "GCC32_DIR=$(pwd)/$(ls | grep arm | head -n1)" >> $GITHUB_ENV
 
-          cp -v ${GITHUB_WORKSPACE}/output/* AnyKernel3/ || {
-            echo "::error::Failed to copy kernel files to AnyKernel3"
-            exit 1
-          }
+    - name: Build Kernel
+      run: |
+        export PATH=$PWD/clang/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH
 
-          cd AnyKernel3
-          ZIP_NAME="${KERNEL_TYPE}-${KERNEL_BRANCH}-${KERNEL_NAME}-${BUILD_TIME}.zip"
-          echo "Creating zip: ${ZIP_NAME}"
+        cd $KERNEL_DIR
+        mkdir out
 
-          if ! zip -r9 ../${ZIP_NAME} * -x .git README.md *placeholder; then
-            echo "::error::Failed to create zip file"
-            exit 1
-          fi
+        make O=out ARCH=arm64 ${KERNEL_NAME}_defconfig
 
-          cd ..
-          if [ ! -f "${ZIP_NAME}" ]; then
-            echo "::error::Zip file was not created"
-            exit 1
-          fi
+        make -j$(nproc) \
+        O=out \
+        ARCH=arm64 \
+        LLVM=1 \
+        LLVM_IAS=1 \
+        CROSS_COMPILE=$GCC64_DIR/bin/aarch64-elf- \
+        CROSS_COMPILE_COMPAT=$GCC32_DIR/bin/arm-eabi-
 
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+    - name: Clone AnyKernel3
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
 
-      - name: List files after packaging
-        run: ls -l
+    - name: Repack AnyKernel3
+      run: |
+        cp $KERNEL_DIR/out/arch/arm64/boot/Image AnyKernel3/
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.KERNEL_TYPE }}-${{ env.KERNEL_VERSION }}-${{ env.KERNEL_BRANCH }}-${{ env.KERNEL_NAME }}
-          path: ${{ env.KERNEL_TYPE }}-*.zip
+        cd AnyKernel3
 
-      - name: Get latest commit hash
-        id: get_hash
-        run: |
-          HASH=$(git -C ${{ env.KERNEL_DIR }} rev-parse --short HEAD)
-          echo "HASH=$HASH" >> $GITHUB_ENV
+        zip -r9 ../${{ env.KERNEL_NAME }}-Kernel.zip * -x .git README.md
 
-      - name: Upload to Telegram
-        run: |
-          curl -F document=@"$ZIP_NAME" \
-               -F caption="✅ Kernel Build Success!\n🔧 Version: ${{ env.KERNEL_VERSION }}\n🕒 Built at: $BUILD_TIME\n⏱ Duration: ${{ env.ELAPSED_TIME }}\n🔨 Commit: ${{ env.HASH }}" \
-               https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendDocument?chat_id=${{ secrets.TELEGRAM_CHAT_ID }}
+    - name: Upload to Telegram
+      run: |
+        curl -F document=@${{ env.KERNEL_NAME }}-Kernel.zip \
+        -F caption="✅ Kernel Build Success
+Device: courbet
+Repo: NekoPoi-Kranul-B
+Commit: $GITHUB_SHA" \
+        https://api.telegram.org/bot$TG_TOKEN/sendDocument?chat_id=$TG_CHAT_ID
